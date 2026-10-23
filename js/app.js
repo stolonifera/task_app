@@ -1,0 +1,549 @@
+import * as store from './store.js';
+import { TIER_LABEL, TIER_ORDER } from './store.js';
+import * as sync from './sync.js';
+
+const $ = (id) => document.getElementById(id);
+
+const el = {
+  tabs: $('tabs'),
+  text: $('composeText'),
+  parentField: $('parentField'),
+  parent: $('composeParent'),
+  due: $('composeDue'),
+  counter: $('counter'),
+  post: $('btnPost'),
+  chips: document.querySelectorAll('.chip'),
+  timeline: $('timeline'),
+  empty: $('empty'),
+  showDone: $('showDone'),
+  stat: $('stat'),
+  badge: $('syncBadge'),
+  avatar: $('avatar'),
+  toast: $('toast'),
+  sheet: $('sheet'),
+  backdrop: $('sheetBackdrop'),
+};
+
+let view = 'all';
+let tier = 'short';
+let editingId = null;
+
+/* ---------------- helpers ---------------- */
+
+function toast(msg, ms = 2200) {
+  el.toast.textContent = msg;
+  el.toast.hidden = false;
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { el.toast.hidden = true; }, ms);
+}
+
+function relTime(iso) {
+  const d = new Date(iso);
+  const diff = (Date.now() - d.getTime()) / 1000;
+  if (diff < 60) return 'いま';
+  if (diff < 3600) return `${Math.floor(diff / 60)}分`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}時間`;
+  if (diff < 86400 * 7) return `${Math.floor(diff / 86400)}日`;
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function dueInfo(due) {
+  if (!due) return null;
+  const today = todayStr();
+  const days = Math.round((new Date(due + 'T00:00:00') - new Date(today + 'T00:00:00')) / 86400000);
+  let cls = '';
+  let label = due.slice(5).replace('-', '/');
+  if (days < 0) { cls = 'over'; label = `${label} (${-days}日超過)`; }
+  else if (days === 0) { cls = 'soon'; label = `${label} (今日)`; }
+  else if (days <= 3) { cls = 'soon'; label = `${label} (あと${days}日)`; }
+  return { cls, label };
+}
+
+/* 期限 → 作成日時 の順で並べる */
+function sortTasks(list) {
+  return list.slice().sort((a, b) => {
+    if (a.done !== b.done) return a.done ? 1 : -1;
+    if (a.due && b.due && a.due !== b.due) return a.due < b.due ? -1 : 1;
+    if (a.due && !b.due) return -1;
+    if (!a.due && b.due) return 1;
+    return a.created_at < b.created_at ? 1 : -1;
+  });
+}
+
+function visible() {
+  const showDone = el.showDone.checked;
+  return store.all().filter((t) => showDone || !t.done);
+}
+
+/* ---------------- composer ---------------- */
+
+function setTier(next) {
+  tier = next;
+  for (const c of el.chips) {
+    const on = c.dataset.tier === next;
+    c.classList.toggle('is-on', on);
+    c.setAttribute('aria-checked', String(on));
+  }
+  refreshParentOptions();
+}
+
+function parentCandidates(forTier) {
+  const tiers = store.parentTiers(forTier);
+  return store
+    .all()
+    .filter((t) => tiers.includes(t.tier) && !t.done)
+    .sort((a, b) => (TIER_ORDER[a.tier] - TIER_ORDER[b.tier]) || (a.created_at < b.created_at ? -1 : 1));
+}
+
+function refreshParentOptions() {
+  if (!store.parentTiers(tier).length) {
+    el.parentField.hidden = true;
+    el.parent.replaceChildren();   // 値を残さない (長期に親が付くのを防ぐ)
+    return;
+  }
+  const cands = parentCandidates(tier);
+  el.parentField.hidden = false;
+  const keep = el.parent.value;
+  el.parent.replaceChildren();
+  el.parent.append(new Option(cands.length ? '— なし —' : '— 上位タスクがまだありません —', ''));
+  for (const c of cands) {
+    const o = new Option(`[${TIER_LABEL[c.tier]}] ${c.body.slice(0, 40)}`, c.id);
+    el.parent.append(o);
+  }
+  if (keep && cands.some((c) => c.id === keep)) el.parent.value = keep;
+}
+
+function autoGrow() {
+  el.text.style.height = 'auto';
+  el.text.style.height = Math.min(el.text.scrollHeight, 320) + 'px';
+}
+
+function updateCounter() {
+  const n = el.text.value.length;
+  el.counter.textContent = `${n} / 500`;
+  el.post.disabled = el.text.value.trim().length === 0;
+}
+
+function post() {
+  const text = el.text.value.trim();
+  if (!text) return;
+  const parentId = store.parentTiers(tier).length ? (el.parent.value || null) : null;
+  const parentTier = parentId ? store.byId(parentId)?.tier ?? null : null;
+  store.create({ tier, text, parentId, parentTier, due: el.due.value || null });
+  el.text.value = '';
+  el.due.value = '';
+  autoGrow();
+  updateCounter();
+  toast(`${TIER_LABEL[tier]}タスクを追加しました`);
+  sync.syncNow().catch(() => {});
+}
+
+/* ---------------- card ---------------- */
+
+function parentChain(task) {
+  const chain = [];
+  let cur = task;
+  const seen = new Set();
+  while (cur?.parent_id && !seen.has(cur.parent_id)) {
+    seen.add(cur.parent_id);
+    const p = store.byId(cur.parent_id);
+    if (!p) break;
+    chain.unshift(p);
+    cur = p;
+  }
+  return chain;
+}
+
+function renderCard(t) {
+  const card = document.createElement('article');
+  card.className = 'card' + (t.done ? ' is-done' : '');
+  card.dataset.id = t.id;
+
+  const check = document.createElement('button');
+  check.className = 'check';
+  check.textContent = '✓';
+  check.setAttribute('aria-label', t.done ? '未完了に戻す' : '完了にする');
+  check.addEventListener('click', () => { store.toggleDone(t.id); sync.syncNow().catch(() => {}); });
+  card.append(check);
+
+  const main = document.createElement('div');
+  main.className = 'card-main';
+
+  const head = document.createElement('div');
+  head.className = 'card-head';
+  const badge = document.createElement('span');
+  badge.className = `tier tier-${t.tier}`;
+  badge.textContent = TIER_LABEL[t.tier];
+  head.append(badge);
+  const time = document.createElement('span');
+  time.textContent = relTime(t.created_at);
+  time.title = new Date(t.created_at).toLocaleString('ja-JP');
+  head.append(time);
+  const di = dueInfo(t.due);
+  if (di) {
+    const d = document.createElement('span');
+    d.className = `card-due dot ${di.cls}`;
+    d.textContent = '期限 ' + di.label;
+    head.append(d);
+  }
+  main.append(head);
+
+  if (editingId === t.id) {
+    const ta = document.createElement('textarea');
+    ta.className = 'card-text';
+    ta.value = t.body;
+    ta.rows = Math.min(8, t.body.split('\n').length + 1);
+    ta.style.width = '100%';
+    main.append(ta);
+
+    const dueEdit = document.createElement('input');
+    dueEdit.type = 'date';
+    dueEdit.value = t.due ?? '';
+    dueEdit.style.marginTop = '8px';
+
+    const relink = document.createElement('select');
+    relink.style.marginTop = '8px';
+    const cands = parentCandidates(t.tier).filter((c) => c.id !== t.id);
+    const cur = t.parent_id ? store.byId(t.parent_id) : null;
+    if (cur && !cands.some((c) => c.id === cur.id)) cands.unshift(cur); // 完了済みの親も残す
+    if (store.parentTiers(t.tier).length) {
+      relink.append(new Option('— 上位タスクなし —', ''));
+      for (const c of cands) relink.append(new Option(`[${TIER_LABEL[c.tier]}] ${c.body.slice(0, 40)}`, c.id));
+      if (t.parent_id) relink.value = t.parent_id;
+    } else {
+      relink.hidden = true;
+    }
+
+    const wrap = document.createElement('div');
+    wrap.className = 'composer-meta';
+    const f1 = document.createElement('label');
+    f1.className = 'field';
+    f1.append(Object.assign(document.createElement('span'), { className: 'field-label', textContent: '期限' }), dueEdit);
+    wrap.append(f1);
+    if (!relink.hidden) {
+      const f2 = document.createElement('label');
+      f2.className = 'field';
+      f2.append(Object.assign(document.createElement('span'), { className: 'field-label', textContent: '紐づける上位タスク' }), relink);
+      wrap.append(f2);
+    }
+    main.append(wrap);
+
+    const acts = document.createElement('div');
+    acts.className = 'card-actions';
+    const save = document.createElement('button');
+    save.className = 'act';
+    save.textContent = '保存';
+    save.addEventListener('click', () => {
+      const body = ta.value.trim();
+      if (!body) { toast('本文が空です'); return; }
+      const pid = relink.hidden ? null : (relink.value || null);
+      store.update(t.id, {
+        body,
+        due: dueEdit.value || null,
+        parent_id: pid,
+        parent_tier: pid ? store.byId(pid)?.tier ?? null : null,
+      });
+      editingId = null;
+      render();
+      sync.syncNow().catch(() => {});
+    });
+    const cancel = document.createElement('button');
+    cancel.className = 'act';
+    cancel.textContent = 'キャンセル';
+    cancel.addEventListener('click', () => { editingId = null; render(); });
+    acts.append(save, cancel);
+    main.append(acts);
+    card.append(main);
+    return card;
+  }
+
+  const body = document.createElement('p');
+  body.className = 'card-text';
+  body.textContent = t.body;
+  main.append(body);
+
+  const chain = parentChain(t);
+  if (chain.length) {
+    const p = document.createElement('div');
+    p.className = 'card-parent';
+    p.append(document.createTextNode('↳ '));
+    chain.forEach((c, i) => {
+      if (i) p.append(document.createTextNode(' › '));
+      const b = document.createElement('b');
+      b.textContent = `${TIER_LABEL[c.tier]}: ${c.body.slice(0, 30)}`;
+      p.append(b);
+    });
+    main.append(p);
+  }
+
+  const kids = store.children(t.id);
+  if (kids.length) {
+    const c = document.createElement('span');
+    c.className = 'childcount';
+    const doneN = kids.filter((k) => k.done).length;
+    c.textContent = `下位タスク ${doneN}/${kids.length} 完了`;
+    main.append(c);
+  }
+
+  const acts = document.createElement('div');
+  acts.className = 'card-actions';
+  const edit = document.createElement('button');
+  edit.className = 'act';
+  edit.textContent = '編集';
+  edit.addEventListener('click', () => { editingId = t.id; render(); });
+  const del = document.createElement('button');
+  del.className = 'act danger';
+  del.textContent = '削除';
+  del.addEventListener('click', () => {
+    if (!confirm('このタスクを削除します。下位タスクは残り、紐付けだけ外れます。')) return;
+    store.remove(t.id);
+    sync.syncNow().catch(() => {});
+    toast('削除しました');
+  });
+  acts.append(edit, del);
+  main.append(acts);
+
+  card.append(main);
+  return card;
+}
+
+/* ---------------- tree ---------------- */
+
+function treeNode(t, lv) {
+  const n = document.createElement('div');
+  n.className = `tree-node lv${lv}` + (t.done ? ' done' : '');
+  const b = document.createElement('span');
+  b.className = `tier tier-${t.tier}`;
+  b.textContent = TIER_LABEL[t.tier];
+  const s = document.createElement('span');
+  s.className = 't';
+  s.textContent = t.body;
+  n.append(b, s);
+  const di = dueInfo(t.due);
+  if (di) {
+    const d = document.createElement('span');
+    d.className = `card-due ${di.cls}`;
+    d.style.fontSize = '12px';
+    d.textContent = di.label;
+    n.append(d);
+  }
+  return n;
+}
+
+function renderTree(list) {
+  const wrap = document.createElement('div');
+  wrap.className = 'tree';
+  const byTier = (x) => list.filter((t) => t.tier === x);
+  const kidsOf = (id, t) => list.filter((x) => x.parent_id === id && x.tier === t);
+
+  for (const lg of sortTasks(byTier('long'))) {
+    const g = document.createElement('div');
+    g.className = 'tree-group';
+    g.append(treeNode(lg, 0));
+    const sub = document.createElement('div');
+    sub.className = 'tree-sub';
+    for (const md of sortTasks(kidsOf(lg.id, 'mid'))) {
+      sub.append(treeNode(md, 1));
+      for (const sh of sortTasks(kidsOf(md.id, 'short'))) sub.append(treeNode(sh, 2));
+    }
+    for (const sh of sortTasks(kidsOf(lg.id, 'short'))) sub.append(treeNode(sh, 1));
+    if (sub.childElementCount) g.append(sub);
+    wrap.append(g);
+  }
+
+  const orphans = list.filter((t) => t.tier !== 'long' && !t.parent_id);
+  const orphanMid = sortTasks(orphans.filter((t) => t.tier === 'mid'));
+  const orphanShort = sortTasks(orphans.filter((t) => t.tier === 'short'));
+  if (orphanMid.length || orphanShort.length) {
+    const g = document.createElement('div');
+    g.className = 'tree-group';
+    const h = document.createElement('div');
+    h.className = 'tree-node lv0';
+    h.style.color = 'var(--text-dim)';
+    h.textContent = '未分類 (上位タスクなし)';
+    g.append(h);
+    const sub = document.createElement('div');
+    sub.className = 'tree-sub';
+    for (const md of orphanMid) {
+      sub.append(treeNode(md, 1));
+      for (const sh of sortTasks(list.filter((x) => x.parent_id === md.id && x.tier === 'short'))) sub.append(treeNode(sh, 2));
+    }
+    for (const sh of orphanShort) sub.append(treeNode(sh, 1));
+    g.append(sub);
+    wrap.append(g);
+  }
+  return wrap;
+}
+
+/* ---------------- render ---------------- */
+
+function render() {
+  const list = visible();
+
+  let shown;
+  if (view === 'all' || view === 'tree') shown = list;
+  else shown = list.filter((t) => t.tier === view);
+
+  el.timeline.replaceChildren();
+  if (view === 'tree') {
+    el.timeline.append(renderTree(list));
+  } else {
+    for (const t of sortTasks(shown)) el.timeline.append(renderCard(t));
+  }
+  el.empty.hidden = shown.length > 0;
+
+  const open = store.all().filter((t) => !t.done);
+  el.stat.textContent = `未完了 ${open.length} / 全 ${store.all().length}`;
+
+  refreshParentOptions();
+}
+
+function renderStatus() {
+  const s = sync.status;
+  const b = el.badge;
+  b.className = 'badge';
+  if (!s.configured) { b.textContent = 'この端末のみ'; b.title = 'Supabase 未設定'; }
+  else if (!s.signedIn) { b.textContent = '未ログイン'; b.classList.add('warn'); }
+  else if (s.syncing) { b.textContent = '同期中…'; }
+  else if (s.error) { b.textContent = '同期エラー'; b.classList.add('err'); b.title = s.error; }
+  else { b.textContent = '同期中 ✓'; b.classList.add('ok'); b.title = s.lastSyncAt ? '最終同期 ' + new Date(s.lastSyncAt).toLocaleString('ja-JP') : ''; }
+
+  el.avatar.textContent = s.email ? s.email[0] : '?';
+
+  $('authState').textContent = !s.configured
+    ? 'Supabase 未設定です。上の URL と key を保存してください。'
+    : s.signedIn ? `ログイン中: ${s.email}` : 'メールアドレスにログインリンクを送って認証します。';
+  $('btnLogout').hidden = !s.signedIn;
+}
+
+/* ---------------- sheet ---------------- */
+
+function openSheet() {
+  const cfg = sync.getConfig();
+  $('cfgUrl').value = cfg?.url ?? '';
+  $('cfgKey').value = cfg?.key ?? '';
+  el.sheet.hidden = false;
+  el.backdrop.hidden = false;
+}
+function closeSheet() {
+  el.sheet.hidden = true;
+  el.backdrop.hidden = true;
+}
+
+/* ---------------- events ---------------- */
+
+el.tabs.addEventListener('click', (e) => {
+  const btn = e.target.closest('.tab');
+  if (!btn) return;
+  view = btn.dataset.view;
+  for (const t of el.tabs.querySelectorAll('.tab')) t.classList.toggle('is-active', t === btn);
+  editingId = null;
+  render();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+});
+
+for (const c of el.chips) c.addEventListener('click', () => setTier(c.dataset.tier));
+
+el.text.addEventListener('input', () => { autoGrow(); updateCounter(); });
+el.text.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); post(); }
+});
+el.post.addEventListener('click', post);
+el.showDone.addEventListener('change', render);
+
+$('btnSettings').addEventListener('click', openSheet);
+$('btnCloseSheet').addEventListener('click', closeSheet);
+el.backdrop.addEventListener('click', closeSheet);
+
+$('btnSaveCfg').addEventListener('click', async () => {
+  const url = $('cfgUrl').value.trim();
+  const key = $('cfgKey').value.trim();
+  if (!url || !key) { toast('URL と key の両方が必要です'); return; }
+  sync.saveConfig(url, key);
+  toast('接続しています…');
+  const ok = await sync.init();
+  toast(ok ? '接続しました' : '接続できませんでした');
+});
+
+$('btnClearCfg').addEventListener('click', () => {
+  if (!confirm('Supabase の接続設定を削除します。ローカルのタスクは残ります。')) return;
+  sync.clearConfig();
+  toast('設定を削除しました');
+});
+
+$('btnMagic').addEventListener('click', async () => {
+  const email = $('authEmail').value.trim();
+  if (!email) { toast('メールアドレスを入力してください'); return; }
+  try {
+    await sync.signIn(email);
+    $('authMsg').textContent = 'ログインリンクを送信しました。メールを確認してください。';
+  } catch (e) {
+    $('authMsg').textContent = 'エラー: ' + (e.message ?? e);
+  }
+});
+
+$('btnLogout').addEventListener('click', async () => {
+  await sync.signOut();
+  toast('ログアウトしました');
+});
+
+$('btnSync').addEventListener('click', async () => {
+  const ok = await sync.syncNow();
+  $('dataMsg').textContent = ok ? '同期しました。' : (sync.status.configured ? (sync.status.error ?? 'ログインが必要です。') : 'Supabase が未設定です。');
+});
+
+$('btnExport').addEventListener('click', () => {
+  const blob = new Blob([store.exportJSON()], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `tasks-${todayStr()}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+$('btnImport').addEventListener('click', () => $('fileImport').click());
+$('fileImport').addEventListener('change', async (e) => {
+  const f = e.target.files?.[0];
+  if (!f) return;
+  try {
+    const n = store.importJSON(await f.text());
+    $('dataMsg').textContent = `${n} 件読み込みました。`;
+    sync.syncNow().catch(() => {});
+  } catch (err) {
+    $('dataMsg').textContent = '読み込み失敗: ' + (err.message ?? err);
+  }
+  e.target.value = '';
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !el.sheet.hidden) closeSheet();
+});
+
+window.addEventListener('online', () => sync.syncNow().catch(() => {}));
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') sync.syncNow().catch(() => {});
+});
+
+/* ---------------- boot ---------------- */
+
+store.subscribe(render);
+sync.onStatus(renderStatus);
+
+el.due.min = '2000-01-01';
+setTier('short');
+updateCounter();
+autoGrow();
+render();
+renderStatus();
+sync.init().catch(console.warn);
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(console.warn);
+  });
+}

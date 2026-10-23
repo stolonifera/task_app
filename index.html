@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tasks</title>
+<meta name="description" content="短期・中期・長期でタスクを管理する PWA">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#15181c" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Tasks">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <h1 class="brand">Tasks</h1>
+    <div class="topbar-right">
+      <span id="syncBadge" class="badge" title="同期状態">—</span>
+      <button id="btnSettings" class="icon-btn" aria-label="設定">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5A3.5 3.5 0 1 0 12 8.5a3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2-1.5-2-3.4-2.3 1a7.6 7.6 0 0 0-1.7-1L15 3.5h-4l-.4 2.6c-.6.2-1.2.6-1.7 1l-2.3-1-2 3.4L4.6 11a7.6 7.6 0 0 0 0 2l-2 1.5 2 3.4 2.3-1c.5.4 1.1.8 1.7 1l.4 2.6h4l.4-2.6c.6-.2 1.2-.6 1.7-1l2.3 1 2-3.4-2-1.5Z" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+      </button>
+    </div>
+  </div>
+  <nav class="tabs" id="tabs">
+    <button class="tab is-active" data-view="all">すべて</button>
+    <button class="tab" data-view="short">短期</button>
+    <button class="tab" data-view="mid">中期</button>
+    <button class="tab" data-view="long">長期</button>
+    <button class="tab" data-view="tree">ツリー</button>
+  </nav>
+</header>
+
+<main class="feed" id="main">
+
+  <!-- 投稿フォーム (Twitter like) -->
+  <section class="composer" id="composer">
+    <div class="composer-row">
+      <div class="avatar" id="avatar">?</div>
+      <div class="composer-body">
+        <textarea id="composeText" rows="1" placeholder="いま、何をやる？" maxlength="500"></textarea>
+
+        <div class="chips" role="radiogroup" aria-label="タスクの枠">
+          <button class="chip chip-short is-on" data-tier="short" role="radio" aria-checked="true">短期</button>
+          <button class="chip chip-mid"   data-tier="mid"   role="radio" aria-checked="false">中期</button>
+          <button class="chip chip-long"  data-tier="long"  role="radio" aria-checked="false">長期</button>
+        </div>
+
+        <div class="composer-meta">
+          <label class="field" id="parentField" hidden>
+            <span class="field-label">紐づける上位タスク</span>
+            <select id="composeParent"></select>
+          </label>
+          <label class="field">
+            <span class="field-label">期限</span>
+            <input type="date" id="composeDue">
+          </label>
+        </div>
+
+        <div class="composer-foot">
+          <span class="counter" id="counter">0 / 500</span>
+          <button class="post-btn" id="btnPost" disabled>投稿</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="filterbar">
+    <label class="switch">
+      <input type="checkbox" id="showDone"> <span>完了も表示</span>
+    </label>
+    <span class="spacer"></span>
+    <span class="stat" id="stat"></span>
+  </div>
+
+  <div id="timeline" class="timeline"></div>
+  <p class="empty" id="empty" hidden>まだタスクがありません。上の欄から投稿してみてください。</p>
+</main>
+
+<!-- 設定シート -->
+<div class="sheet-backdrop" id="sheetBackdrop" hidden></div>
+<section class="sheet" id="sheet" hidden aria-label="設定">
+  <div class="sheet-head">
+    <h2>設定</h2>
+    <button class="icon-btn" id="btnCloseSheet" aria-label="閉じる">✕</button>
+  </div>
+
+  <div class="sheet-body">
+    <h3>同期 (Supabase)</h3>
+    <p class="hint">URL と anon key を入れると、PC・スマホ間で同期されます。未設定でもこの端末だけで利用できます。</p>
+    <label class="field">
+      <span class="field-label">Project URL</span>
+      <input type="url" id="cfgUrl" placeholder="https://xxxx.supabase.co" autocomplete="off">
+    </label>
+    <label class="field">
+      <span class="field-label">anon public key</span>
+      <input type="password" id="cfgKey" placeholder="eyJhbGciOi..." autocomplete="off">
+    </label>
+    <div class="row">
+      <button class="btn" id="btnSaveCfg">保存して接続</button>
+      <button class="btn btn-ghost" id="btnClearCfg">設定を削除</button>
+    </div>
+
+    <hr>
+
+    <h3>ログイン</h3>
+    <div id="authArea">
+      <p class="hint" id="authState">Supabase 未設定です。</p>
+      <label class="field">
+        <span class="field-label">メールアドレス</span>
+        <input type="email" id="authEmail" placeholder="you@example.com" autocomplete="email">
+      </label>
+      <div class="row">
+        <button class="btn" id="btnMagic">ログインリンクを送る</button>
+        <button class="btn btn-ghost" id="btnLogout" hidden>ログアウト</button>
+      </div>
+      <p class="hint" id="authMsg"></p>
+    </div>
+
+    <hr>
+
+    <h3>データ</h3>
+    <div class="row">
+      <button class="btn btn-ghost" id="btnSync">今すぐ同期</button>
+      <button class="btn btn-ghost" id="btnExport">JSON 書き出し</button>
+      <button class="btn btn-ghost" id="btnImport">JSON 読み込み</button>
+    </div>
+    <input type="file" id="fileImport" accept="application/json" hidden>
+    <p class="hint" id="dataMsg"></p>
+  </div>
+</section>
+
+<div id="toast" class="toast" hidden></div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
