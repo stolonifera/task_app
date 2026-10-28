@@ -106,8 +106,12 @@ git remote add origin git@github.com:<ユーザー名>/<リポジトリ名>.git
 git push -u origin main
 ```
 
-リポジトリの **Settings → Pages → Source** を **GitHub Actions** にすると、
-`.github/workflows/deploy.yml` が push のたびに公開します。
+リポジトリの **Settings → Pages → Build and deployment** で
+
+- **Source**: `Deploy from a branch`
+- **Branch**: `main` / `/ (root)`
+
+を選んで Save すると、push のたびに GitHub が自動で公開します。
 
 パスはすべて相対指定なので、`https://<user>.github.io/<repo>/` のような
 サブディレクトリ配信でもそのまま動きます。`.nojekyll` も同梱済みです。
