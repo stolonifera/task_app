@@ -170,14 +170,34 @@
     <h3>ログイン</h3>
     <div id="authArea">
       <p class="hint" id="authState">Supabase 未設定です。</p>
-      <label class="field">
-        <span class="field-label">メールアドレス</span>
-        <input type="email" id="authEmail" placeholder="you@example.com" autocomplete="email">
-      </label>
-      <div class="row">
-        <button class="btn" id="btnMagic">ログインリンクを送る</button>
-        <button class="btn btn-ghost" id="btnLogout" hidden>ログアウト</button>
+
+      <div id="authForm">
+        <label class="field">
+          <span class="field-label">メールアドレス</span>
+          <input type="email" id="authEmail" placeholder="you@example.com" autocomplete="email">
+        </label>
+        <label class="field">
+          <span class="field-label">パスワード</span>
+          <input type="password" id="authPass" placeholder="6 文字以上" autocomplete="current-password">
+        </label>
+        <div class="row">
+          <button class="btn" id="btnLogin">ログイン</button>
+          <button class="btn btn-ghost" id="btnSignup">新規登録</button>
+          <button class="btn btn-ghost" id="btnReset">パスワードを忘れた</button>
+        </div>
       </div>
+
+      <div id="authSignedIn" hidden>
+        <label class="field">
+          <span class="field-label">新しいパスワード</span>
+          <input type="password" id="newPass" placeholder="6 文字以上" autocomplete="new-password">
+        </label>
+        <div class="row">
+          <button class="btn btn-ghost" id="btnChangePass">パスワードを変更</button>
+          <button class="btn btn-ghost" id="btnLogout">ログアウト</button>
+        </div>
+      </div>
+
       <p class="hint" id="authMsg"></p>
     </div>
 

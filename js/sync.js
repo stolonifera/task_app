@@ -101,13 +101,36 @@ function applySession(s) {
   else unsubscribeRealtime();
 }
 
-export async function signIn(email) {
+const redirectUrl = () => location.origin + location.pathname;
+
+export async function signInWithPassword(email, password) {
   if (!client) throw new Error('Supabase が未設定です');
-  const redirect = location.origin + location.pathname;
-  const { error } = await client.auth.signInWithOtp({
+  const { error } = await client.auth.signInWithPassword({ email, password });
+  if (error) throw error;
+}
+
+/** @returns {boolean} true ならそのままログイン済み (確認メール不要の設定) */
+export async function signUp(email, password) {
+  if (!client) throw new Error('Supabase が未設定です');
+  const { data, error } = await client.auth.signUp({
     email,
-    options: { emailRedirectTo: redirect },
+    password,
+    options: { emailRedirectTo: redirectUrl() },
   });
+  if (error) throw error;
+  return !!data.session;
+}
+
+/** 再設定メールのリンクを開くとこのアプリに戻り、セッションが張られた状態になる */
+export async function sendPasswordReset(email) {
+  if (!client) throw new Error('Supabase が未設定です');
+  const { error } = await client.auth.resetPasswordForEmail(email, { redirectTo: redirectUrl() });
+  if (error) throw error;
+}
+
+export async function updatePassword(password) {
+  if (!client) throw new Error('Supabase が未設定です');
+  const { error } = await client.auth.updateUser({ password });
   if (error) throw error;
 }
 

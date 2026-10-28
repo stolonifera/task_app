@@ -519,8 +519,9 @@ function renderStatus() {
 
   $('authState').textContent = !s.configured
     ? 'Supabase 未設定です。上の URL と key を保存してください。'
-    : s.signedIn ? `ログイン中: ${s.email}` : 'メールアドレスにログインリンクを送って認証します。';
-  $('btnLogout').hidden = !s.signedIn;
+    : s.signedIn ? `ログイン中: ${s.email}` : 'メールアドレスとパスワードでログインします。初回は「新規登録」から。';
+  $('authForm').hidden = s.signedIn;
+  $('authSignedIn').hidden = !s.signedIn;
 }
 
 /* ---------------- 画面遷移 ---------------- */
@@ -672,19 +673,90 @@ $('btnClearCfg').addEventListener('click', () => {
   toast('設定を削除しました');
 });
 
-$('btnMagic').addEventListener('click', async () => {
+/* Supabase からのエラーは英語なので、よくあるものだけ日本語にする */
+function authError(e) {
+  const m = String(e?.message ?? e);
+  if (/Invalid login credentials/i.test(m)) return 'メールアドレスかパスワードが違います。';
+  if (/Email not confirmed/i.test(m)) return 'メールの確認が終わっていません。届いたリンクを開いてください。';
+  if (/Password should be at least/i.test(m)) return 'パスワードが短すぎます (既定では 6 文字以上)。';
+  if (/User already registered/i.test(m)) return 'このメールアドレスは登録済みです。「ログイン」を押してください。';
+  if (/rate limit|too many requests/i.test(m)) return '試行が多すぎます。少し時間をおいてください。';
+  if (/not authorized|signups? not allowed|disabled/i.test(m)) return '新規登録が無効になっています (Supabase の設定を確認してください)。';
+  return 'エラー: ' + m;
+}
+
+function authInput() {
   const email = $('authEmail').value.trim();
-  if (!email) { toast('メールアドレスを入力してください'); return; }
+  const password = $('authPass').value;
+  if (!email || !password) {
+    $('authMsg').textContent = 'メールアドレスとパスワードを入力してください。';
+    return null;
+  }
+  return { email, password };
+}
+
+$('btnLogin').addEventListener('click', async () => {
+  const v = authInput();
+  if (!v) return;
+  $('authMsg').textContent = 'ログインしています…';
   try {
-    await sync.signIn(email);
-    $('authMsg').textContent = 'ログインリンクを送信しました。メールを確認してください。';
+    await sync.signInWithPassword(v.email, v.password);
+    $('authPass').value = '';
+    $('authMsg').textContent = '';
+    toast('ログインしました');
   } catch (e) {
-    $('authMsg').textContent = 'エラー: ' + (e.message ?? e);
+    $('authMsg').textContent = authError(e);
   }
 });
 
+$('btnSignup').addEventListener('click', async () => {
+  const v = authInput();
+  if (!v) return;
+  $('authMsg').textContent = '登録しています…';
+  try {
+    const signedIn = await sync.signUp(v.email, v.password);
+    $('authPass').value = '';
+    if (signedIn) {
+      $('authMsg').textContent = '';
+      toast('登録してログインしました');
+    } else {
+      $('authMsg').textContent = '確認メールを送りました。リンクを開くとログインできます。';
+    }
+  } catch (e) {
+    $('authMsg').textContent = authError(e);
+  }
+});
+
+$('btnReset').addEventListener('click', async () => {
+  const email = $('authEmail').value.trim();
+  if (!email) { $('authMsg').textContent = 'メールアドレスを入力してください。'; return; }
+  try {
+    await sync.sendPasswordReset(email);
+    $('authMsg').textContent = '再設定メールを送りました。リンクを開くとログイン状態になるので、下の「パスワードを変更」で設定し直してください。';
+  } catch (e) {
+    $('authMsg').textContent = authError(e);
+  }
+});
+
+$('btnChangePass').addEventListener('click', async () => {
+  const pw = $('newPass').value;
+  if (!pw) { $('authMsg').textContent = '新しいパスワードを入力してください。'; return; }
+  try {
+    await sync.updatePassword(pw);
+    $('newPass').value = '';
+    $('authMsg').textContent = '';
+    toast('パスワードを変更しました');
+  } catch (e) {
+    $('authMsg').textContent = authError(e);
+  }
+});
+
+$('authPass').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('btnLogin').click(); });
+$('newPass').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('btnChangePass').click(); });
+
 $('btnLogout').addEventListener('click', async () => {
   await sync.signOut();
+  $('authMsg').textContent = '';
   toast('ログアウトしました');
 });
 

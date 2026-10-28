@@ -1,7 +1,7 @@
 /* 静的ホスティング (GitHub Pages) 前提のシンプルな Service Worker。
    アプリシェルは cache-first、同期 API は常にネットワーク。 */
 
-const VERSION = 'v4';
+const VERSION = 'v5';
 const CACHE = `taskapp-${VERSION}`;
 
 const SHELL = [
