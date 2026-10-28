@@ -1,7 +1,7 @@
 /* 静的ホスティング (GitHub Pages) 前提のシンプルな Service Worker。
    アプリシェルは cache-first、同期 API は常にネットワーク。 */
 
-const VERSION = 'v1';
+const VERSION = 'v4';
 const CACHE = `taskapp-${VERSION}`;
 
 const SHELL = [
@@ -57,7 +57,21 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
-  // それ以外は cache-first + バックグラウンド更新
+  // アプリシェル (自分の HTML/CSS/JS) は network-first。
+  // cache-first にすると更新後も 1 回は古い画面が出てしまうため。
+  if (url.origin === self.location.origin && /\.(?:html|css|js)$/.test(url.pathname)) {
+    e.respondWith(
+      fetch(req)
+        .then((res) => {
+          if (res.ok) caches.open(CACHE).then((c) => c.put(req, res.clone()));
+          return res;
+        })
+        .catch(() => caches.match(req))
+    );
+    return;
+  }
+
+  // それ以外 (アイコン / manifest / CDN) は cache-first + バックグラウンド更新
   e.respondWith(
     caches.match(req).then((hit) => {
       const net = fetch(req)

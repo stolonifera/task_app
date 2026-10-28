@@ -5,6 +5,11 @@ import * as sync from './sync.js';
 const $ = (id) => document.getElementById(id);
 
 const el = {
+  screenList: $('screenList'),
+  screenCompose: $('screenCompose'),
+  screenDetail: $('screenDetail'),
+  detailBody: $('detailBody'),
+  detailTitle: $('detailTitle'),
   tabs: $('tabs'),
   text: $('composeText'),
   parentField: $('parentField'),
@@ -26,6 +31,7 @@ const el = {
 
 let view = 'all';
 let tier = 'short';
+let composeParentId = null;   // 投稿画面で既定にする上位タスク
 let editingId = null;
 
 /* ---------------- helpers ---------------- */
@@ -80,6 +86,40 @@ function visible() {
   return store.all().filter((t) => showDone || !t.done);
 }
 
+/* ---------------- テーマ ---------------- */
+
+const THEME_KEY = 'taskapp.theme';
+const darkMQ = matchMedia('(prefers-color-scheme: dark)');
+
+function getTheme() {
+  try {
+    const t = localStorage.getItem(THEME_KEY);
+    if (t === 'auto' || t === 'light' || t === 'dark') return t;
+  } catch { /* noop */ }
+  return 'auto';
+}
+
+/** 'auto' | 'light' | 'dark' を :root に反映する */
+function applyTheme(t) {
+  const root = document.documentElement;
+  if (t === 'auto') delete root.dataset.theme;
+  else root.dataset.theme = t;
+
+  const dark = t === 'dark' || (t === 'auto' && darkMQ.matches);
+  $('metaTheme').content = dark ? '#15181c' : '#ffffff';
+
+  for (const b of document.querySelectorAll('[data-theme-choice]')) {
+    const on = b.dataset.themeChoice === t;
+    b.classList.toggle('is-on', on);
+    b.setAttribute('aria-checked', String(on));
+  }
+}
+
+function setTheme(t) {
+  try { localStorage.setItem(THEME_KEY, t); } catch { /* noop */ }
+  applyTheme(t);
+}
+
 /* ---------------- composer ---------------- */
 
 function setTier(next) {
@@ -108,14 +148,20 @@ function refreshParentOptions() {
   }
   const cands = parentCandidates(tier);
   el.parentField.hidden = false;
-  const keep = el.parent.value;
   el.parent.replaceChildren();
   el.parent.append(new Option(cands.length ? '— なし —' : '— 上位タスクがまだありません —', ''));
   for (const c of cands) {
-    const o = new Option(`[${TIER_LABEL[c.tier]}] ${c.body.slice(0, 40)}`, c.id);
-    el.parent.append(o);
+    el.parent.append(new Option(`[${TIER_LABEL[c.tier]}] ${c.body.slice(0, 40)}`, c.id));
   }
-  if (keep && cands.some((c) => c.id === keep)) el.parent.value = keep;
+
+  if (!composeParentId) return;
+  const want = store.byId(composeParentId);
+  // 完了済みの親から「下位タスクを追加」した場合も選べるようにしておく
+  if (want && !cands.some((c) => c.id === want.id) && store.parentTiers(tier).includes(want.tier)) {
+    el.parent.append(new Option(`[${TIER_LABEL[want.tier]}] ${want.body.slice(0, 40)}`, want.id));
+  }
+  el.parent.value = composeParentId;
+  if (el.parent.value !== composeParentId) composeParentId = el.parent.value || null;  // 枠を変えて無効になった
 }
 
 function autoGrow() {
@@ -141,6 +187,7 @@ function post() {
   updateCounter();
   toast(`${TIER_LABEL[tier]}タスクを追加しました`);
   sync.syncNow().catch(() => {});
+  goBack();
 }
 
 /* ---------------- card ---------------- */
@@ -159,7 +206,7 @@ function parentChain(task) {
   return chain;
 }
 
-function renderCard(t) {
+function renderCard(t, { link = true, root = false } = {}) {
   const card = document.createElement('article');
   card.className = 'card' + (t.done ? ' is-done' : '');
   card.dataset.id = t.id;
@@ -172,7 +219,13 @@ function renderCard(t) {
   card.append(check);
 
   const main = document.createElement('div');
-  main.className = 'card-main';
+  main.className = 'card-main' + (link ? ' is-linked' : '');
+  if (link) {
+    main.addEventListener('click', (e) => {
+      if (e.target.closest('button, a, input, select, textarea')) return;  // 操作系は素通し
+      openDetail(t.id);
+    });
+  }
 
   const head = document.createElement('div');
   head.className = 'card-head';
@@ -281,7 +334,7 @@ function renderCard(t) {
     main.append(p);
   }
 
-  const kids = store.children(t.id);
+  const kids = root ? [] : store.children(t.id);
   if (kids.length) {
     const c = document.createElement('span');
     c.className = 'childcount';
@@ -304,12 +357,56 @@ function renderCard(t) {
     store.remove(t.id);
     sync.syncNow().catch(() => {});
     toast('削除しました');
+    if (root) goBack();
   });
   acts.append(edit, del);
   main.append(acts);
 
   card.append(main);
   return card;
+}
+
+/* ---------------- detail ---------------- */
+
+function renderDetail(id) {
+  const host = el.detailBody;
+  host.replaceChildren();
+
+  const t = store.byId(id);
+  if (!t) {
+    el.detailTitle.textContent = 'タスク';
+    $('btnAddChild').hidden = true;
+    const p = document.createElement('p');
+    p.className = 'empty';
+    p.textContent = 'このタスクは見つかりません (削除された可能性があります)。';
+    host.append(p);
+    return;
+  }
+
+  el.detailTitle.textContent = `${TIER_LABEL[t.tier]}タスク`;
+  const canHaveChildren = store.childTiers(t.tier).length > 0;
+  $('btnAddChild').hidden = !canHaveChildren;
+
+  host.append(renderCard(t, { link: false, root: true }));
+  if (!canHaveChildren) return;
+
+  const all = store.children(t.id);
+  const head = document.createElement('div');
+  head.className = 'section-head';
+  head.textContent = all.length ? `下位タスク ${all.filter((k) => k.done).length}/${all.length} 完了` : '下位タスク';
+  host.append(head);
+
+  const kids = sortTasks(all.filter((k) => el.showDone.checked || !k.done));
+  if (!kids.length) {
+    const p = document.createElement('p');
+    p.className = 'empty';
+    p.textContent = all.length
+      ? '表示できる下位タスクがありません (完了済みは「すべて」画面の「完了も表示」で見られます)。'
+      : '下位タスクはまだありません。右上の「＋ 下位タスク」または n キーで追加できます。';
+    host.append(p);
+    return;
+  }
+  for (const k of kids) host.append(renderCard(k));
 }
 
 /* ---------------- tree ---------------- */
@@ -324,6 +421,8 @@ function treeNode(t, lv) {
   s.className = 't';
   s.textContent = t.body;
   n.append(b, s);
+  n.classList.add('is-linked');
+  n.addEventListener('click', () => openDetail(t.id));
   const di = dueInfo(t.due);
   if (di) {
     const d = document.createElement('span');
@@ -400,6 +499,9 @@ function render() {
   const open = store.all().filter((t) => !t.done);
   el.stat.textContent = `未完了 ${open.length} / 全 ${store.all().length}`;
 
+  const r = parseRoute();
+  if (r.name === 'detail') renderDetail(r.id);
+
   refreshParentOptions();
 }
 
@@ -421,6 +523,81 @@ function renderStatus() {
   $('btnLogout').hidden = !s.signedIn;
 }
 
+/* ---------------- 画面遷移 ---------------- */
+
+/* 一覧 (#) / 詳細 (#t/<id>) / 投稿 (#new, #new?p=<親id>) をハッシュで切り替える。
+   pushState の state.d に深さを持たせ、戻るで一段ずつ遡れるようにする。 */
+
+function parseRoute() {
+  const h = decodeURIComponent(location.hash.replace(/^#/, ''));
+  if (h === 'new' || h.startsWith('new?')) {
+    return { name: 'compose', parentId: new URLSearchParams(h.split('?')[1] ?? '').get('p') };
+  }
+  const m = h.match(/^t\/(.+)$/);
+  if (m) return { name: 'detail', id: m[1] };
+  return { name: 'list' };
+}
+
+function depth() {
+  return history.state?.d ?? 0;
+}
+
+function navigate(hash) {
+  history.pushState({ d: depth() + 1 }, '', hash);
+  applyRoute(true);
+}
+
+/** 一段戻る。アプリが積んだ履歴が無ければ一覧へ。 */
+function goBack() {
+  if (depth() > 0) history.back();            // popstate で applyRoute が走る
+  else {
+    history.replaceState({ d: 0 }, '', location.pathname + location.search);
+    applyRoute(true);
+  }
+}
+
+let lastHash = null;
+
+function applyRoute(force = false) {
+  if (!force && location.hash === lastHash) return;
+  lastHash = location.hash;
+
+  const r = parseRoute();
+  el.screenList.hidden = r.name !== 'list';
+  el.screenDetail.hidden = r.name !== 'detail';
+  el.screenCompose.hidden = r.name !== 'compose';
+  for (const [scr, on] of [[el.screenList, r.name === 'list'], [el.screenDetail, r.name === 'detail'], [el.screenCompose, r.name === 'compose']]) {
+    scr.setAttribute('aria-hidden', String(!on));
+  }
+  window.scrollTo({ top: 0 });
+
+  if (r.name === 'detail') renderDetail(r.id);
+
+  if (r.name === 'compose') {
+    const parent = r.parentId ? store.byId(r.parentId) : null;
+    composeParentId = parent?.id ?? null;
+    if (parent) {
+      setTier(store.childTiers(parent.tier)[0] ?? tier);   // 長期 → 中期 / 中期 → 短期
+      $('composeTitle').textContent = '下位タスクを追加';
+    } else {
+      $('composeTitle').textContent = '新しいタスク';
+      refreshParentOptions();
+    }
+    autoGrow();
+    updateCounter();
+    el.text.focus({ preventScroll: true });
+  }
+}
+
+function openCompose(parentId = null) {
+  if (parseRoute().name === 'compose') return;
+  navigate(parentId ? `#new?p=${encodeURIComponent(parentId)}` : '#new');
+}
+
+function openDetail(id) {
+  navigate(`#t/${encodeURIComponent(id)}`);
+}
+
 /* ---------------- sheet ---------------- */
 
 function openSheet() {
@@ -440,6 +617,7 @@ function closeSheet() {
 el.tabs.addEventListener('click', (e) => {
   const btn = e.target.closest('.tab');
   if (!btn) return;
+  if (parseRoute().name !== 'list') goBack();   // 保険: 一覧タブは常に一覧を見せる
   view = btn.dataset.view;
   for (const t of el.tabs.querySelectorAll('.tab')) t.classList.toggle('is-active', t === btn);
   editingId = null;
@@ -447,7 +625,25 @@ el.tabs.addEventListener('click', (e) => {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 });
 
+$('themeSeg').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-theme-choice]');
+  if (b) setTheme(b.dataset.themeChoice);
+});
+darkMQ.addEventListener('change', () => { if (getTheme() === 'auto') applyTheme('auto'); });
+
+$('btnNew').addEventListener('click', openCompose);
+$('btnBack').addEventListener('click', goBack);
+$('btnDetailBack').addEventListener('click', goBack);
+$('btnAddChild').addEventListener('click', () => {
+  const r = parseRoute();
+  if (r.name === 'detail') openCompose(r.id);
+});
+window.addEventListener('popstate', () => applyRoute(true));
+window.addEventListener('hashchange', () => applyRoute());
+
 for (const c of el.chips) c.addEventListener('click', () => setTier(c.dataset.tier));
+
+el.parent.addEventListener('change', () => { composeParentId = el.parent.value || null; });
 
 el.text.addEventListener('input', () => { autoGrow(); updateCounter(); });
 el.text.addEventListener('keydown', (e) => {
@@ -521,7 +717,26 @@ $('fileImport').addEventListener('change', async (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !el.sheet.hidden) closeSheet();
+  if (e.key === 'Escape') {
+    if (!el.sheet.hidden) closeSheet();
+    else if (parseRoute().name !== 'list') goBack();
+    return;
+  }
+
+  // n / c で投稿画面へ。入力中・修飾キー併用・設定シート表示中は無効。
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (!el.sheet.hidden) return;
+  const tag = e.target.tagName;
+  if (e.target.isContentEditable || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+  if (e.key === 'n' || e.key === 'N' || e.key === 'c' || e.key === 'C') {
+    const r = parseRoute();
+    if (r.name === 'compose') return;
+    e.preventDefault();
+    // 詳細画面からなら、その下位タスクとして開く
+    const parent = r.name === 'detail' ? store.byId(r.id) : null;
+    openCompose(parent && store.childTiers(parent.tier).length ? parent.id : null);
+  }
 });
 
 window.addEventListener('online', () => sync.syncNow().catch(() => {}));
@@ -534,12 +749,14 @@ document.addEventListener('visibilitychange', () => {
 store.subscribe(render);
 sync.onStatus(renderStatus);
 
+applyTheme(getTheme());
 el.due.min = '2000-01-01';
 setTier('short');
 updateCounter();
 autoGrow();
 render();
 renderStatus();
+applyRoute();
 sync.init().catch(console.warn);
 
 if ('serviceWorker' in navigator) {

@@ -85,6 +85,13 @@ export function parentTiers(tier) {
   return [];
 }
 
+/** tier の 1 つ下 / 2 つ下の枠 (先頭が既定の下位枠) */
+export function childTiers(tier) {
+  if (tier === 'long') return ['mid', 'short'];
+  if (tier === 'mid') return ['short'];
+  return [];
+}
+
 export function create({ tier, text, parentId = null, parentTier = null, due = null }) {
   if (!TIERS.includes(tier)) throw new Error('unknown tier: ' + tier);
   const now = new Date().toISOString();

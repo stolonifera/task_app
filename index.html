@@ -5,81 +5,131 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Tasks</title>
 <meta name="description" content="短期・中期・長期でタスクを管理する PWA">
-<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#15181c" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" id="metaTheme" content="#ffffff">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Tasks">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
 <link rel="stylesheet" href="css/style.css">
+<script>
+/* 保存済みテーマを初回描画前に当てる (ちらつき防止)。以降の操作は js/app.js 側。 */
+(function () {
+  try {
+    var t = localStorage.getItem('taskapp.theme');
+    if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+    var dark = t === 'dark' || (t !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+    document.getElementById('metaTheme').content = dark ? '#15181c' : '#ffffff';
+  } catch (e) { /* noop */ }
+})();
+</script>
 </head>
 <body>
 
-<header class="topbar">
-  <div class="topbar-inner">
-    <h1 class="brand">Tasks</h1>
-    <div class="topbar-right">
-      <span id="syncBadge" class="badge" title="同期状態">—</span>
-      <button id="btnSettings" class="icon-btn" aria-label="設定">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5A3.5 3.5 0 1 0 12 8.5a3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2-1.5-2-3.4-2.3 1a7.6 7.6 0 0 0-1.7-1L15 3.5h-4l-.4 2.6c-.6.2-1.2.6-1.7 1l-2.3-1-2 3.4L4.6 11a7.6 7.6 0 0 0 0 2l-2 1.5 2 3.4 2.3-1c.5.4 1.1.8 1.7 1l.4 2.6h4l.4-2.6c.6-.2 1.2-.6 1.7-1l2.3 1 2-3.4-2-1.5Z" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
-      </button>
-    </div>
-  </div>
-  <nav class="tabs" id="tabs">
-    <button class="tab is-active" data-view="all">すべて</button>
-    <button class="tab" data-view="short">短期</button>
-    <button class="tab" data-view="mid">中期</button>
-    <button class="tab" data-view="long">長期</button>
-    <button class="tab" data-view="tree">ツリー</button>
-  </nav>
-</header>
+<!-- ============ 一覧画面 ============ -->
+<div class="screen" id="screenList">
 
-<main class="feed" id="main">
-
-  <!-- 投稿フォーム (Twitter like) -->
-  <section class="composer" id="composer">
-    <div class="composer-row">
-      <div class="avatar" id="avatar">?</div>
-      <div class="composer-body">
-        <textarea id="composeText" rows="1" placeholder="いま、何をやる？" maxlength="500"></textarea>
-
-        <div class="chips" role="radiogroup" aria-label="タスクの枠">
-          <button class="chip chip-short is-on" data-tier="short" role="radio" aria-checked="true">短期</button>
-          <button class="chip chip-mid"   data-tier="mid"   role="radio" aria-checked="false">中期</button>
-          <button class="chip chip-long"  data-tier="long"  role="radio" aria-checked="false">長期</button>
-        </div>
-
-        <div class="composer-meta">
-          <label class="field" id="parentField" hidden>
-            <span class="field-label">紐づける上位タスク</span>
-            <select id="composeParent"></select>
-          </label>
-          <label class="field">
-            <span class="field-label">期限</span>
-            <input type="date" id="composeDue">
-          </label>
-        </div>
-
-        <div class="composer-foot">
-          <span class="counter" id="counter">0 / 500</span>
-          <button class="post-btn" id="btnPost" disabled>投稿</button>
-        </div>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <h1 class="brand">Tasks</h1>
+      <div class="topbar-right">
+        <span id="syncBadge" class="badge" title="同期状態">—</span>
+        <button id="btnSettings" class="icon-btn" aria-label="設定">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5A3.5 3.5 0 1 0 12 8.5a3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2-1.5-2-3.4-2.3 1a7.6 7.6 0 0 0-1.7-1L15 3.5h-4l-.4 2.6c-.6.2-1.2.6-1.7 1l-2.3-1-2 3.4L4.6 11a7.6 7.6 0 0 0 0 2l-2 1.5 2 3.4 2.3-1c.5.4 1.1.8 1.7 1l.4 2.6h4l.4-2.6c.6-.2 1.2-.6 1.7-1l2.3 1 2-3.4-2-1.5Z" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+        </button>
       </div>
     </div>
-  </section>
+    <nav class="tabs" id="tabs">
+      <button class="tab is-active" data-view="all">すべて</button>
+      <button class="tab" data-view="short">短期</button>
+      <button class="tab" data-view="mid">中期</button>
+      <button class="tab" data-view="long">長期</button>
+      <button class="tab" data-view="tree">ツリー</button>
+    </nav>
+  </header>
 
-  <div class="filterbar">
-    <label class="switch">
-      <input type="checkbox" id="showDone"> <span>完了も表示</span>
-    </label>
-    <span class="spacer"></span>
-    <span class="stat" id="stat"></span>
-  </div>
+  <main class="feed">
+    <div class="filterbar">
+      <label class="switch">
+        <input type="checkbox" id="showDone"> <span>完了も表示</span>
+      </label>
+      <span class="spacer"></span>
+      <span class="stat" id="stat"></span>
+    </div>
 
-  <div id="timeline" class="timeline"></div>
-  <p class="empty" id="empty" hidden>まだタスクがありません。上の欄から投稿してみてください。</p>
-</main>
+    <div id="timeline" class="timeline"></div>
+    <p class="empty" id="empty" hidden>まだタスクがありません。右下の + から投稿してみてください。</p>
+  </main>
+
+  <button class="fab" id="btnNew" aria-label="タスクを投稿" title="新しいタスク (n)">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v14h-2z"/><path d="M5 11h14v2H5z"/></svg>
+  </button>
+</div>
+
+<!-- ============ タスク詳細画面 ============ -->
+<div class="screen" id="screenDetail" hidden>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <button id="btnDetailBack" class="icon-btn" aria-label="戻る">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11H7.8l5.6-5.6L12 4l-8 8 8 8 1.4-1.4L7.8 13H20v-2Z"/></svg>
+      </button>
+      <h1 class="brand" id="detailTitle">タスク</h1>
+      <button class="post-btn" id="btnAddChild" title="下位タスクを追加 (n)" hidden>＋ 下位タスク</button>
+    </div>
+  </header>
+
+  <main class="feed">
+    <div id="detailBody"></div>
+  </main>
+</div>
+
+<!-- ============ 投稿画面 ============ -->
+<div class="screen" id="screenCompose" hidden>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <button id="btnBack" class="icon-btn" aria-label="一覧に戻る">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11H7.8l5.6-5.6L12 4l-8 8 8 8 1.4-1.4L7.8 13H20v-2Z"/></svg>
+      </button>
+      <h1 class="brand" id="composeTitle">新しいタスク</h1>
+      <button class="post-btn" id="btnPost" disabled>投稿</button>
+    </div>
+  </header>
+
+  <main class="feed">
+    <section class="composer" id="composer">
+      <div class="composer-row">
+        <div class="avatar" id="avatar">?</div>
+        <div class="composer-body">
+          <textarea id="composeText" rows="1" placeholder="投稿" maxlength="500"></textarea>
+
+          <div class="chips" role="radiogroup" aria-label="タスクの枠">
+            <button class="chip chip-short is-on" data-tier="short" role="radio" aria-checked="true">短期</button>
+            <button class="chip chip-mid"   data-tier="mid"   role="radio" aria-checked="false">中期</button>
+            <button class="chip chip-long"  data-tier="long"  role="radio" aria-checked="false">長期</button>
+          </div>
+
+          <div class="composer-meta">
+            <label class="field" id="parentField" hidden>
+              <span class="field-label">紐づける上位タスク</span>
+              <select id="composeParent"></select>
+            </label>
+            <label class="field">
+              <span class="field-label">期限</span>
+              <input type="date" id="composeDue">
+            </label>
+          </div>
+
+          <div class="composer-foot">
+            <span class="counter" id="counter">0 / 500</span>
+            <span class="hint-inline">⌘ / Ctrl + Enter で投稿</span>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
 
 <!-- 設定シート -->
 <div class="sheet-backdrop" id="sheetBackdrop" hidden></div>
@@ -90,6 +140,16 @@
   </div>
 
   <div class="sheet-body">
+    <h3>表示テーマ</h3>
+    <div class="seg" id="themeSeg" role="radiogroup" aria-label="表示テーマ">
+      <button class="seg-btn" data-theme-choice="auto"  role="radio" aria-checked="true">自動</button>
+      <button class="seg-btn" data-theme-choice="light" role="radio" aria-checked="false">ライト</button>
+      <button class="seg-btn" data-theme-choice="dark"  role="radio" aria-checked="false">ダーク</button>
+    </div>
+    <p class="hint">「自動」は端末 / ブラウザの設定に従います。ライト・ダークを選ぶとそれを固定します。</p>
+
+    <hr>
+
     <h3>同期 (Supabase)</h3>
     <p class="hint">URL と anon key を入れると、PC・スマホ間で同期されます。未設定でもこの端末だけで利用できます。</p>
     <label class="field">
