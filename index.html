@@ -66,6 +66,23 @@
   </button>
 </div>
 
+<!-- ============ 設定画面 ============ -->
+<div class="screen" id="screenSettings" hidden>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <button id="btnSettingsBack" class="icon-btn" aria-label="戻る">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11H7.8l5.6-5.6L12 4l-8 8 8 8 1.4-1.4L7.8 13H20v-2Z"/></svg>
+      </button>
+      <h1 class="brand">設定</h1>
+    </div>
+  </header>
+
+  <main class="feed">
+    <div class="settings" id="settingsBody"></div>
+  </main>
+</div>
+
 <!-- ============ タスク詳細画面 ============ -->
 <div class="screen" id="screenDetail" hidden>
 
@@ -130,89 +147,6 @@
     </section>
   </main>
 </div>
-
-<!-- 設定シート -->
-<div class="sheet-backdrop" id="sheetBackdrop" hidden></div>
-<section class="sheet" id="sheet" hidden aria-label="設定">
-  <div class="sheet-head">
-    <h2>設定</h2>
-    <button class="icon-btn" id="btnCloseSheet" aria-label="閉じる">✕</button>
-  </div>
-
-  <div class="sheet-body">
-    <h3>表示テーマ</h3>
-    <div class="seg" id="themeSeg" role="radiogroup" aria-label="表示テーマ">
-      <button class="seg-btn" data-theme-choice="auto"  role="radio" aria-checked="true">自動</button>
-      <button class="seg-btn" data-theme-choice="light" role="radio" aria-checked="false">ライト</button>
-      <button class="seg-btn" data-theme-choice="dark"  role="radio" aria-checked="false">ダーク</button>
-    </div>
-    <p class="hint">「自動」は端末 / ブラウザの設定に従います。ライト・ダークを選ぶとそれを固定します。</p>
-
-    <hr>
-
-    <h3>同期 (Supabase)</h3>
-    <p class="hint">URL と anon key を入れると、PC・スマホ間で同期されます。未設定でもこの端末だけで利用できます。</p>
-    <label class="field">
-      <span class="field-label">Project URL</span>
-      <input type="url" id="cfgUrl" placeholder="https://xxxx.supabase.co" autocomplete="off">
-    </label>
-    <label class="field">
-      <span class="field-label">anon public key</span>
-      <input type="password" id="cfgKey" placeholder="eyJhbGciOi..." autocomplete="off">
-    </label>
-    <div class="row">
-      <button class="btn" id="btnSaveCfg">保存して接続</button>
-      <button class="btn btn-ghost" id="btnClearCfg">設定を削除</button>
-    </div>
-
-    <hr>
-
-    <h3>ログイン</h3>
-    <div id="authArea">
-      <p class="hint" id="authState">Supabase 未設定です。</p>
-
-      <div id="authForm">
-        <label class="field">
-          <span class="field-label">メールアドレス</span>
-          <input type="email" id="authEmail" placeholder="you@example.com" autocomplete="email">
-        </label>
-        <label class="field">
-          <span class="field-label">パスワード</span>
-          <input type="password" id="authPass" placeholder="6 文字以上" autocomplete="current-password">
-        </label>
-        <div class="row">
-          <button class="btn" id="btnLogin">ログイン</button>
-          <button class="btn btn-ghost" id="btnSignup">新規登録</button>
-          <button class="btn btn-ghost" id="btnReset">パスワードを忘れた</button>
-        </div>
-      </div>
-
-      <div id="authSignedIn" hidden>
-        <label class="field">
-          <span class="field-label">新しいパスワード</span>
-          <input type="password" id="newPass" placeholder="6 文字以上" autocomplete="new-password">
-        </label>
-        <div class="row">
-          <button class="btn btn-ghost" id="btnChangePass">パスワードを変更</button>
-          <button class="btn btn-ghost" id="btnLogout">ログアウト</button>
-        </div>
-      </div>
-
-      <p class="hint" id="authMsg"></p>
-    </div>
-
-    <hr>
-
-    <h3>データ</h3>
-    <div class="row">
-      <button class="btn btn-ghost" id="btnSync">今すぐ同期</button>
-      <button class="btn btn-ghost" id="btnExport">JSON 書き出し</button>
-      <button class="btn btn-ghost" id="btnImport">JSON 読み込み</button>
-    </div>
-    <input type="file" id="fileImport" accept="application/json" hidden>
-    <p class="hint" id="dataMsg"></p>
-  </div>
-</section>
 
 <div id="toast" class="toast" hidden></div>
 

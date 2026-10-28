@@ -4,10 +4,14 @@ import * as sync from './sync.js';
 
 const $ = (id) => document.getElementById(id);
 
+export const APP_VERSION = '1.1.0';
+
 const el = {
   screenList: $('screenList'),
   screenCompose: $('screenCompose'),
   screenDetail: $('screenDetail'),
+  screenSettings: $('screenSettings'),
+  settingsBody: $('settingsBody'),
   detailBody: $('detailBody'),
   detailTitle: $('detailTitle'),
   tabs: $('tabs'),
@@ -25,8 +29,8 @@ const el = {
   badge: $('syncBadge'),
   avatar: $('avatar'),
   toast: $('toast'),
-  sheet: $('sheet'),
-  backdrop: $('sheetBackdrop'),
+  screenSettings: $('screenSettings'),
+  settingsBody: $('settingsBody'),
 };
 
 let view = 'all';
@@ -41,6 +45,23 @@ function toast(msg, ms = 2200) {
   el.toast.hidden = false;
   clearTimeout(toast._t);
   toast._t = setTimeout(() => { el.toast.hidden = true; }, ms);
+}
+
+function esc(v) {
+  return String(v ?? '').replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
+function formatBytes(n) {
+  if (typeof n !== 'number') return '-';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 ** 2).toFixed(1)} MB`;
+}
+
+function fullTime(iso) {
+  return new Date(iso).toLocaleString('ja-JP', { dateStyle: 'medium', timeStyle: 'short' });
 }
 
 function relTime(iso) {
@@ -107,12 +128,6 @@ function applyTheme(t) {
 
   const dark = t === 'dark' || (t === 'auto' && darkMQ.matches);
   $('metaTheme').content = dark ? '#15181c' : '#ffffff';
-
-  for (const b of document.querySelectorAll('[data-theme-choice]')) {
-    const on = b.dataset.themeChoice === t;
-    b.classList.toggle('is-on', on);
-    b.setAttribute('aria-checked', String(on));
-  }
 }
 
 function setTheme(t) {
@@ -517,11 +532,7 @@ function renderStatus() {
 
   el.avatar.textContent = s.email ? s.email[0] : '?';
 
-  $('authState').textContent = !s.configured
-    ? 'Supabase 未設定です。上の URL と key を保存してください。'
-    : s.signedIn ? `ログイン中: ${s.email}` : 'メールアドレスとパスワードでログインします。初回は「新規登録」から。';
-  $('authForm').hidden = s.signedIn;
-  $('authSignedIn').hidden = !s.signedIn;
+  if (parseRoute().name === 'settings') updateSettingsStatus();
 }
 
 /* ---------------- 画面遷移 ---------------- */
@@ -534,6 +545,7 @@ function parseRoute() {
   if (h === 'new' || h.startsWith('new?')) {
     return { name: 'compose', parentId: new URLSearchParams(h.split('?')[1] ?? '').get('p') };
   }
+  if (h === 'settings') return { name: 'settings' };
   const m = h.match(/^t\/(.+)$/);
   if (m) return { name: 'detail', id: m[1] };
   return { name: 'list' };
@@ -564,15 +576,15 @@ function applyRoute(force = false) {
   lastHash = location.hash;
 
   const r = parseRoute();
-  el.screenList.hidden = r.name !== 'list';
-  el.screenDetail.hidden = r.name !== 'detail';
-  el.screenCompose.hidden = r.name !== 'compose';
-  for (const [scr, on] of [[el.screenList, r.name === 'list'], [el.screenDetail, r.name === 'detail'], [el.screenCompose, r.name === 'compose']]) {
-    scr.setAttribute('aria-hidden', String(!on));
+  for (const [scr, name] of [[el.screenList, 'list'], [el.screenDetail, 'detail'],
+                             [el.screenCompose, 'compose'], [el.screenSettings, 'settings']]) {
+    scr.hidden = r.name !== name;
+    scr.setAttribute('aria-hidden', String(r.name !== name));
   }
   window.scrollTo({ top: 0 });
 
   if (r.name === 'detail') renderDetail(r.id);
+  if (r.name === 'settings') renderSettings();
 
   if (r.name === 'compose') {
     const parent = r.parentId ? store.byId(r.parentId) : null;
@@ -599,18 +611,280 @@ function openDetail(id) {
   navigate(`#t/${encodeURIComponent(id)}`);
 }
 
-/* ---------------- sheet ---------------- */
+/* ---------------- 設定画面 ---------------- */
 
-function openSheet() {
-  const cfg = sync.getConfig();
-  $('cfgUrl').value = cfg?.url ?? '';
-  $('cfgKey').value = cfg?.key ?? '';
-  el.sheet.hidden = false;
-  el.backdrop.hidden = false;
+function syncState(s) {
+  if (!s.configured) return 'off';
+  if (!s.signedIn) return 'signed-out';
+  if (s.syncing) return 'syncing';
+  if (!navigator.onLine) return 'offline';
+  if (s.error) return 'error';
+  return 'idle';
 }
-function closeSheet() {
-  el.sheet.hidden = true;
-  el.backdrop.hidden = true;
+
+const SYNC_LABEL = {
+  off: '未設定 (この端末にだけ保存)',
+  'signed-out': 'ログインしていません',
+  syncing: '同期中…',
+  offline: 'オフライン (接続時に同期します)',
+  error: 'エラー',
+  idle: '同期済み',
+};
+
+function storageBytes() {
+  try { return new Blob([localStorage.getItem('taskapp.v1') ?? '']).size; } catch { return null; }
+}
+
+/* 入力中のフォームを壊さないよう、再描画するのは画面に入った時と状態が変わった時だけ */
+let settingsKey = null;
+
+function renderSettings() {
+  const s = sync.status;
+  const cfg = sync.getConfig();
+  const state = syncState(s);
+  settingsKey = `${s.configured}/${s.signedIn}`;
+
+  let syncBody;
+  if (!s.configured) {
+    syncBody = `<div class="stack">
+      <label for="cfgUrl">Project URL</label>
+      <input id="cfgUrl" type="url" placeholder="https://xxxx.supabase.co" autocomplete="off" autocapitalize="off">
+      <label for="cfgKey">anon public key</label>
+      <input id="cfgKey" type="password" placeholder="eyJhbGciOi…" autocomplete="off">
+      <div class="btns"><button class="btn sm" id="btnSaveCfg">保存して接続</button></div>
+    </div>`;
+  } else if (!s.signedIn) {
+    syncBody = `<div class="row"><div class="label">サーバー<small>${esc(cfg?.url ?? '')}</small></div></div>
+    <div class="stack">
+      <label for="authEmail">メールアドレス</label>
+      <input id="authEmail" type="email" placeholder="you@example.com" autocomplete="username" autocapitalize="off">
+      <label for="authPass">パスワード</label>
+      <input id="authPass" type="password" placeholder="6 文字以上" autocomplete="current-password">
+      <div class="btns">
+        <button class="btn sm" id="btnLogin">ログイン</button>
+        <button class="btn sm ghost" id="btnSignup">新規登録</button>
+        <button class="btn sm ghost" id="btnReset">パスワードを忘れた</button>
+      </div>
+      <p class="msg" id="authMsg"></p>
+    </div>
+    <button class="row danger" id="btnClearCfg"><span class="label">サーバー設定を解除</span></button>`;
+  } else {
+    syncBody = `<div class="row"><div class="label">アカウント<small>${esc(s.email ?? '')}</small></div></div>
+    <div class="row"><div class="label">最終同期<small id="syncLast">${esc(s.lastSyncAt ? fullTime(s.lastSyncAt) : '-')}</small></div>
+      <button class="btn sm" id="btnSync">今すぐ同期</button></div>
+    <div class="stack">
+      <label for="newPass">パスワードの変更</label>
+      <input id="newPass" type="password" placeholder="新しいパスワード (6 文字以上)" autocomplete="new-password">
+      <div class="btns"><button class="btn sm ghost" id="btnChangePass">変更する</button></div>
+      <p class="msg" id="authMsg"></p>
+    </div>
+    <button class="row" id="btnLogout"><span class="label">ログアウト</span></button>
+    <button class="row danger" id="btnClearCfg"><span class="label">サーバー設定を解除</span></button>`;
+  }
+
+  const tasks = store.all();
+  const theme = getTheme();
+
+  el.settingsBody.innerHTML = `
+    <div class="group"><h3>同期</h3><div class="box">
+      <div class="row"><div class="status-line"><i class="${esc(state)}"></i><span>${esc(SYNC_LABEL[state])}</span></div></div>
+      <div class="row" id="syncErr"${state === 'error' && s.error ? '' : ' hidden'}><div class="label err">${esc(s.error ?? '')}</div></div>
+      ${syncBody}
+    </div><p class="hint">Supabase (無料枠あり) で PC・スマホ間のタスクを同期します。設定しなくても、この端末だけで使えます。</p></div>
+
+    <div class="group"><h3>表示</h3><div class="box">
+      <div class="row"><div class="label">テーマ</div><div class="seg" id="themeSeg">
+        ${[['auto', '自動'], ['light', 'ライト'], ['dark', 'ダーク']]
+          .map(([v, l]) => `<button data-v="${v}" class="${theme === v ? 'on' : ''}">${l}</button>`).join('')}
+      </div></div>
+    </div><p class="hint">「自動」は端末 / ブラウザの設定に従います。</p></div>
+
+    <div class="group"><h3>データ</h3><div class="box">
+      <button class="row" id="btnExport"><span class="label">JSON で書き出す<small>この端末のタスクをファイルに保存します</small></span></button>
+      <button class="row" id="btnImport"><span class="label">JSON から読み込む<small>同じ ID のタスクは読み込んだ内容で上書きします</small></span></button>
+      <input type="file" id="fileImport" accept="application/json" hidden>
+      <div class="row"><div class="label">タスク数</div><span class="value">${tasks.length.toLocaleString()} 件 (未完了 ${tasks.filter((t) => !t.done).length})</span></div>
+      <div class="row"><div class="label">保存サイズ</div><span class="value">${esc(formatBytes(storageBytes()))}</span></div>
+    </div><p class="hint" id="dataMsg"></p></div>
+
+    <div class="group"><h3>アプリ</h3><div class="box">
+      <div class="row"><div class="label">バージョン</div><span class="value">${esc(APP_VERSION)}</span></div>
+      <button class="row" id="btnUpdate"><span class="label">アップデートを確認</span></button>
+      <button class="row danger" id="btnWipe"><span class="label">この端末のデータをすべて削除</span></button>
+    </div></div>`;
+
+  bindSettings();
+}
+
+/* 状態表示だけ差し替える (入力中のフォームを保持するため) */
+function updateSettingsStatus() {
+  const s = sync.status;
+  if (settingsKey !== `${s.configured}/${s.signedIn}`) { renderSettings(); return; }
+
+  const line = el.settingsBody.querySelector('.status-line');
+  if (!line) return;
+  const state = syncState(s);
+  line.innerHTML = `<i class="${esc(state)}"></i><span>${esc(SYNC_LABEL[state])}</span>`;
+
+  const err = $('syncErr');
+  if (err) {
+    err.hidden = !(state === 'error' && s.error);
+    err.firstElementChild.textContent = s.error ?? '';
+  }
+  const last = $('syncLast');
+  if (last) last.textContent = s.lastSyncAt ? fullTime(s.lastSyncAt) : '-';
+}
+
+/* Supabase のエラーは英語なので、よくあるものだけ日本語にする */
+function authError(e) {
+  const m = String(e?.message ?? e);
+  if (/Invalid login credentials/i.test(m)) return 'メールアドレスかパスワードが違います。';
+  if (/Email not confirmed/i.test(m)) return 'メールの確認が終わっていません。届いたリンクを開いてください。';
+  if (/Password should be at least/i.test(m)) return 'パスワードが短すぎます (既定では 6 文字以上)。';
+  if (/User already registered/i.test(m)) return 'このメールアドレスは登録済みです。「ログイン」を押してください。';
+  if (/rate limit|too many requests/i.test(m)) return '試行が多すぎます。少し時間をおいてください。';
+  if (/not authorized|signups? not allowed|disabled/i.test(m)) return '新規登録が無効になっています (Supabase の設定を確認してください)。';
+  return 'エラー: ' + m;
+}
+
+function bindSettings() {
+  const on = (id, ev, fn) => $(id)?.addEventListener(ev, fn);
+  const msg = (t) => { const m = $('authMsg'); if (m) m.textContent = t; };
+
+  /* 押している間は二重送信を防ぐ */
+  const busy = (fn) => async (e) => {
+    const b = e.currentTarget;
+    b.disabled = true;
+    try { await fn(e); } catch (err) { msg(authError(err)); } finally { b.disabled = false; }
+  };
+
+  const creds = () => {
+    const email = $('authEmail').value.trim();
+    const password = $('authPass').value;
+    if (!email || !password) { msg('メールアドレスとパスワードを入力してください。'); return null; }
+    return { email, password };
+  };
+
+  // ---- 同期 ----
+  on('btnSaveCfg', 'click', busy(async () => {
+    const url = $('cfgUrl').value.trim();
+    const key = $('cfgKey').value.trim();
+    if (!url || !key) { toast('URL と key の両方が必要です'); return; }
+    sync.saveConfig(url, key);
+    toast('接続しています…');
+    toast(await sync.init() ? '接続しました。ログインしてください' : '接続できませんでした');
+    renderSettings();
+  }));
+
+  on('btnLogin', 'click', busy(async () => {
+    const v = creds();
+    if (!v) return;
+    msg('ログインしています…');
+    await sync.signInWithPassword(v.email, v.password);
+    toast('ログインしました');
+    renderSettings();
+  }));
+
+  on('btnSignup', 'click', busy(async () => {
+    const v = creds();
+    if (!v) return;
+    msg('登録しています…');
+    if (await sync.signUp(v.email, v.password)) {
+      toast('登録してログインしました');
+      renderSettings();
+    } else {
+      msg('確認メールを送りました。リンクを開くとログインできます。');
+    }
+  }));
+
+  on('btnReset', 'click', busy(async () => {
+    const email = $('authEmail').value.trim();
+    if (!email) { msg('メールアドレスを入力してください。'); return; }
+    await sync.sendPasswordReset(email);
+    msg('再設定メールを送りました。リンクを開くとログイン状態になるので、設定画面の「パスワードの変更」で設定し直してください。');
+  }));
+
+  on('btnChangePass', 'click', busy(async () => {
+    const pw = $('newPass').value;
+    if (!pw) { msg('新しいパスワードを入力してください。'); return; }
+    await sync.updatePassword(pw);
+    $('newPass').value = '';
+    msg('');
+    toast('パスワードを変更しました');
+  }));
+
+  on('authPass', 'keydown', (e) => { if (e.key === 'Enter') $('btnLogin').click(); });
+  on('newPass', 'keydown', (e) => { if (e.key === 'Enter') $('btnChangePass').click(); });
+
+  on('btnSync', 'click', busy(async () => {
+    const ok = await sync.syncNow();
+    toast(ok ? '同期しました' : (sync.status.error ?? '同期できませんでした'));
+    updateSettingsStatus();
+  }));
+
+  on('btnLogout', 'click', async () => {
+    if (!confirm('ログアウトしますか？ (この端末のタスクは残ります)')) return;
+    await sync.signOut();
+    toast('ログアウトしました');
+    renderSettings();
+  });
+
+  on('btnClearCfg', 'click', () => {
+    if (!confirm('サーバー設定を解除しますか？ (この端末のタスクは残ります)')) return;
+    sync.clearConfig();
+    toast('設定を解除しました');
+    renderSettings();
+  });
+
+  // ---- 表示 ----
+  on('themeSeg', 'click', (e) => {
+    const b = e.target.closest('[data-v]');
+    if (!b) return;
+    setTheme(b.dataset.v);
+    for (const x of $('themeSeg').children) x.classList.toggle('on', x === b);
+  });
+
+  // ---- データ ----
+  on('btnExport', 'click', () => {
+    const blob = new Blob([store.exportJSON()], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `tasks-${todayStr()}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+
+  on('btnImport', 'click', () => $('fileImport').click());
+  on('fileImport', 'change', async (e) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    if (!f) return;
+    try {
+      const n = store.importJSON(await f.text());
+      renderSettings();
+      $('dataMsg').textContent = `${n} 件読み込みました。`;
+      sync.syncNow().catch(() => {});
+    } catch (err) {
+      $('dataMsg').textContent = '読み込み失敗: ' + (err.message ?? err);
+    }
+  });
+
+  // ---- アプリ ----
+  on('btnUpdate', 'click', async () => {
+    const reg = await navigator.serviceWorker?.getRegistration();
+    if (!reg) { toast('オフライン機能が有効になっていません'); return; }
+    await reg.update().catch(() => {});
+    toast(reg.waiting || reg.installing ? '新しいバージョンを準備しています…' : '最新版です');
+  });
+
+  on('btnWipe', 'click', () => {
+    if (!confirm('この端末のタスクと設定をすべて削除します。\n(同期済みのタスクはサーバーに残ります)')) return;
+    if (!confirm('本当に削除しますか？ 元に戻せません。')) return;
+    store.wipeLocal();
+    try { localStorage.clear(); } catch { /* noop */ }
+    location.replace(location.pathname + location.search);
+    location.reload();
+  });
 }
 
 /* ---------------- events ---------------- */
@@ -626,10 +900,6 @@ el.tabs.addEventListener('click', (e) => {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 });
 
-$('themeSeg').addEventListener('click', (e) => {
-  const b = e.target.closest('[data-theme-choice]');
-  if (b) setTheme(b.dataset.themeChoice);
-});
 darkMQ.addEventListener('change', () => { if (getTheme() === 'auto') applyTheme('auto'); });
 
 $('btnNew').addEventListener('click', openCompose);
@@ -653,157 +923,23 @@ el.text.addEventListener('keydown', (e) => {
 el.post.addEventListener('click', post);
 el.showDone.addEventListener('change', render);
 
-$('btnSettings').addEventListener('click', openSheet);
-$('btnCloseSheet').addEventListener('click', closeSheet);
-el.backdrop.addEventListener('click', closeSheet);
-
-$('btnSaveCfg').addEventListener('click', async () => {
-  const url = $('cfgUrl').value.trim();
-  const key = $('cfgKey').value.trim();
-  if (!url || !key) { toast('URL と key の両方が必要です'); return; }
-  sync.saveConfig(url, key);
-  toast('接続しています…');
-  const ok = await sync.init();
-  toast(ok ? '接続しました' : '接続できませんでした');
-});
-
-$('btnClearCfg').addEventListener('click', () => {
-  if (!confirm('Supabase の接続設定を削除します。ローカルのタスクは残ります。')) return;
-  sync.clearConfig();
-  toast('設定を削除しました');
-});
-
-/* Supabase からのエラーは英語なので、よくあるものだけ日本語にする */
-function authError(e) {
-  const m = String(e?.message ?? e);
-  if (/Invalid login credentials/i.test(m)) return 'メールアドレスかパスワードが違います。';
-  if (/Email not confirmed/i.test(m)) return 'メールの確認が終わっていません。届いたリンクを開いてください。';
-  if (/Password should be at least/i.test(m)) return 'パスワードが短すぎます (既定では 6 文字以上)。';
-  if (/User already registered/i.test(m)) return 'このメールアドレスは登録済みです。「ログイン」を押してください。';
-  if (/rate limit|too many requests/i.test(m)) return '試行が多すぎます。少し時間をおいてください。';
-  if (/not authorized|signups? not allowed|disabled/i.test(m)) return '新規登録が無効になっています (Supabase の設定を確認してください)。';
-  return 'エラー: ' + m;
-}
-
-function authInput() {
-  const email = $('authEmail').value.trim();
-  const password = $('authPass').value;
-  if (!email || !password) {
-    $('authMsg').textContent = 'メールアドレスとパスワードを入力してください。';
-    return null;
-  }
-  return { email, password };
-}
-
-$('btnLogin').addEventListener('click', async () => {
-  const v = authInput();
-  if (!v) return;
-  $('authMsg').textContent = 'ログインしています…';
-  try {
-    await sync.signInWithPassword(v.email, v.password);
-    $('authPass').value = '';
-    $('authMsg').textContent = '';
-    toast('ログインしました');
-  } catch (e) {
-    $('authMsg').textContent = authError(e);
-  }
-});
-
-$('btnSignup').addEventListener('click', async () => {
-  const v = authInput();
-  if (!v) return;
-  $('authMsg').textContent = '登録しています…';
-  try {
-    const signedIn = await sync.signUp(v.email, v.password);
-    $('authPass').value = '';
-    if (signedIn) {
-      $('authMsg').textContent = '';
-      toast('登録してログインしました');
-    } else {
-      $('authMsg').textContent = '確認メールを送りました。リンクを開くとログインできます。';
-    }
-  } catch (e) {
-    $('authMsg').textContent = authError(e);
-  }
-});
-
-$('btnReset').addEventListener('click', async () => {
-  const email = $('authEmail').value.trim();
-  if (!email) { $('authMsg').textContent = 'メールアドレスを入力してください。'; return; }
-  try {
-    await sync.sendPasswordReset(email);
-    $('authMsg').textContent = '再設定メールを送りました。リンクを開くとログイン状態になるので、下の「パスワードを変更」で設定し直してください。';
-  } catch (e) {
-    $('authMsg').textContent = authError(e);
-  }
-});
-
-$('btnChangePass').addEventListener('click', async () => {
-  const pw = $('newPass').value;
-  if (!pw) { $('authMsg').textContent = '新しいパスワードを入力してください。'; return; }
-  try {
-    await sync.updatePassword(pw);
-    $('newPass').value = '';
-    $('authMsg').textContent = '';
-    toast('パスワードを変更しました');
-  } catch (e) {
-    $('authMsg').textContent = authError(e);
-  }
-});
-
-$('authPass').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('btnLogin').click(); });
-$('newPass').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('btnChangePass').click(); });
-
-$('btnLogout').addEventListener('click', async () => {
-  await sync.signOut();
-  $('authMsg').textContent = '';
-  toast('ログアウトしました');
-});
-
-$('btnSync').addEventListener('click', async () => {
-  const ok = await sync.syncNow();
-  $('dataMsg').textContent = ok ? '同期しました。' : (sync.status.configured ? (sync.status.error ?? 'ログインが必要です。') : 'Supabase が未設定です。');
-});
-
-$('btnExport').addEventListener('click', () => {
-  const blob = new Blob([store.exportJSON()], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `tasks-${todayStr()}.json`;
-  a.click();
-  URL.revokeObjectURL(a.href);
-});
-
-$('btnImport').addEventListener('click', () => $('fileImport').click());
-$('fileImport').addEventListener('change', async (e) => {
-  const f = e.target.files?.[0];
-  if (!f) return;
-  try {
-    const n = store.importJSON(await f.text());
-    $('dataMsg').textContent = `${n} 件読み込みました。`;
-    sync.syncNow().catch(() => {});
-  } catch (err) {
-    $('dataMsg').textContent = '読み込み失敗: ' + (err.message ?? err);
-  }
-  e.target.value = '';
-});
+$('btnSettings').addEventListener('click', () => navigate('#settings'));
+$('btnSettingsBack').addEventListener('click', goBack);
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
-    if (!el.sheet.hidden) closeSheet();
-    else if (parseRoute().name !== 'list') goBack();
+    if (parseRoute().name !== 'list') goBack();
     return;
   }
 
-  // n / c で投稿画面へ。入力中・修飾キー併用・設定シート表示中は無効。
+  // n / c で投稿画面へ。入力中・修飾キー併用時は無効。
   if (e.metaKey || e.ctrlKey || e.altKey) return;
-  if (!el.sheet.hidden) return;
   const tag = e.target.tagName;
   if (e.target.isContentEditable || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
   if (e.key === 'n' || e.key === 'N' || e.key === 'c' || e.key === 'C') {
     const r = parseRoute();
-    if (r.name === 'compose') return;
+    if (r.name === 'compose' || r.name === 'settings') return;
     e.preventDefault();
     // 詳細画面からなら、その下位タスクとして開く
     const parent = r.name === 'detail' ? store.byId(r.id) : null;
